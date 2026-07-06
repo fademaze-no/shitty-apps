@@ -1,0 +1,117 @@
+#!/bin/bash
+set -euo pipefail
+
+# color codes
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+NC='\033[0m' # No Color (reset)
+
+# check if a file name is specified
+if [ -z "${1:-}" ]; then
+    echo -e "${RED}You must specify a file name first.${NC}" >&2
+    exit 1
+fi
+
+TARGET_FILE="$1" # the target file, $1 represents the entire first parameter (a file iirc)
+FILE_DIR=$(dirname "$TARGET_FILE")
+BACKUP_DIR="/tmp/renano" # directory where backups are stored, taken for every file edit
+BACKUP_FILE="$BACKUP_DIR/$(basename "$TARGET_FILE")"
+
+# --- check if it is a folder or the file does not exist ---
+
+if [ -d "$TARGET_FILE" ]; then
+    echo -e "${RED}'$TARGET_FILE' is a folder, not a file! Goodbye${NC}" >&2
+    exit 1
+fi
+
+if [ ! -e "$TARGET_FILE" ]; then
+    echo -e "${RED}That file does not exist yet. Click Ctrl+C to abort creating a new file.${NC}"
+    
+    # countdown from 5 to 1
+    for i in {5..1}; do
+        printf "\r%d... " "$i"
+        sleep 1
+    done
+    
+    # finally, update the last line
+    printf "\r${GREEN}Opening nano${NC}\n"
+    sleep 0.5
+fi
+
+# --- check permissions ---
+
+# check if the folder directory is writable
+if [ ! -w "$FILE_DIR" ]; then
+    echo -e "${RED}You do not have write permissions in $FILE_DIR!${NC}" >&2
+    exit 1
+fi
+
+# check if we can read and write if the file exists
+if [ -f "$TARGET_FILE" ]; then
+    if [ ! -r "$TARGET_FILE" ] || [ ! -w "$TARGET_FILE" ]; then
+        echo -e "${RED}You are missing mangler read/write access to $TARGET_FILE!${NC}" >&2
+        exit 1
+    fi
+fi
+
+# --- install nano with apt, unless it exists already ---
+
+show_spinner() {
+    local pid=$1; local delay=0.1; local spinstr='|/--\'
+    tput civvis || true # error throws here, so we'll force it to say true if it fails, as || is a condition for "OR"
+    while kill -0 "$pid" 2>/dev/null; do
+        local temp=${spinstr#?}; printf "\r[%c] Installerer nano... " "$spinstr"
+        local spinstr=$temp${spinstr%"$temp"}; sleep $delay
+    done
+    printf "\r\033[K"; tput cnorm || true # idfk if the error will reproduce here too
+}
+
+if ! command -v nano &> /dev/null; then
+    echo "Nano is missing! Let me go install it real quick..."
+    sudo apt-get update -y &> /dev/null
+    sudo apt-get install -y nano &> /dev/null &
+    show_spinner "$!"
+    wait "$!"
+fi
+
+# --- backup and editing ---
+
+mkdir -p "$BACKUP_DIR"
+
+# make a temporary editing file in /tmp
+TEMP_EDIT_FILE="/tmp/renano_edit_$$"
+
+if [ -f "$TARGET_FILE" ]; then
+    # take an actual backup of the file
+    cp "$TARGET_FILE" "$BACKUP_FILE"
+    # also copy it to the temporary file we're about to open in nano
+    cp "$TARGET_FILE" "$TEMP_EDIT_FILE"
+else
+    # if the file is entirely new, we'll just make it (empty) with"touch
+    touch "$TEMP_EDIT_FILE"
+fi
+
+# open the temporary file in nano, do not throw errors because of set -euo pipeline arguing with nano, e.g. Ctrl+X or denied saving is thrown
+nano "$TEMP_EDIT_FILE" || true
+
+# --- check: were file changes done? ---
+
+if [ -f "$TARGET_FILE" ]; then
+    if cmp -s "$TARGET_FILE" "$TEMP_EDIT_FILE"; then
+        echo "No changes were detected; the file remains untouched, deep in the filesystem's forest..."
+        rm -f "$TEMP_EDIT_FILE"
+    else
+        echo "Edits have been detected. I'm now replacing the file.."
+        rm -f "$TARGET_FILE"
+        cp "$TEMP_EDIT_FILE" "$TARGET_FILE"
+        rm -f "$TEMP_EDIT_FILE"
+    fi
+else
+    # Hvis originalfilen ikke fantes fra før, men brukeren skrev og lagret noe i nano
+    if [ -s "$TEMP_EDIT_FILE" ]; then
+        echo "New file created"
+        cp "$TEMP_EDIT_FILE" "$TARGET_FILE"
+    fi
+    rm -f "$TEMP_EDIT_FILE"
+fi
+# and that was ALL!?
